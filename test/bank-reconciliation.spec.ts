@@ -91,6 +91,17 @@ describe('Mock bank outcomes and reconciliation', () => {
   });
 
   describe('reconciliation safety', () => {
+    it('resolves UNKNOWN -> PENDING via reconciliation without leaking internal detail into failure_reason', async () => {
+      const res = await pay(app, A.key, 'idem-recon-unknown-pending', 'BEN_TIMEOUT_001', inr(10_000));
+      expect(res.body.data.status).toBe('UNKNOWN');
+      await db.query("UPDATE mock_bank_transfers SET status = 'PENDING'");
+      const report = await recon.run();
+      expect(report.resolved).toEqual([expect.objectContaining({ from: 'UNKNOWN', to: 'PENDING', applied: true })]);
+      const row = (await db.query('SELECT status, failure_reason FROM payouts WHERE id = $1', [res.body.data.id])).rows[0];
+      expect(row.status).toBe('PENDING');
+      expect(row.failure_reason).toBeNull();
+    });
+
     it('resolves PENDING when the bank has a final answer', async () => {
       await pay(app, A.key, 'idem-recon-pend', 'BEN_PEND_001', inr(10_000));
       await db.query("UPDATE mock_bank_transfers SET status = 'FAILED'");

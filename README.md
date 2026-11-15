@@ -18,10 +18,10 @@ cp .env.example .env                 # demo-only values
 docker compose up -d db              # PostgreSQL 16 on :5432, creates database "payouts" (or use your own PostgreSQL, see below)
 npm run migrate                      # creates tables (migrations/001_init.sql)
 npm run seed                         # creates 2 test merchants (prints their API keys)
-npm start                            # http://localhost:3001/api (or :3000)
+npm start                            # http://localhost:3000/api
 ```
 
-Interactive Swagger documentation & testing UI: `http://localhost:3001/api/docs` (or `/api/doc`, `/docs`).
+Interactive Swagger documentation & testing UI: `http://localhost:3000/api/docs` (or `/api/doc`, `/docs`).
 
 If you use your own PostgreSQL instead of Docker: run `createdb payouts` and adjust `DATABASE_URL` / `TEST_DATABASE_URL` in `.env`.
 `npm test` creates the `payouts_test` database itself (the DB user needs CREATEDB permission).
@@ -42,7 +42,7 @@ npm test
 ```
 
 Tests run against a **real PostgreSQL** database (`payouts_test`, wiped between tests) because concurrency guarantees
-cannot be proven with a mock. 72 tests, ~4 s. Latest output: [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md).
+cannot be proven with a mock. 74 tests, ~4 s. Latest output: [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md).
 
 | Required test | Where |
 |---|---|
@@ -58,12 +58,18 @@ cannot be proven with a mock. 72 tests, ~4 s. Latest output: [`docs/TEST_RESULTS
 
 Every scenario ends by checking an **accounting invariant** (`expectLedgerConsistent`): wallet balances must equal what the ledger sums to.
 
-## 3. Sample requests
+## 3. Documentation
 
-* `bash scripts/demo.sh`: runs a 12-step end-to-end demo with cURL (needs the server running and `npm run seed -- --reset`).
-* [`docs/sample-requests.md`](docs/sample-requests.md): individual cURL commands, response envelopes, and webhook signing walkthrough.
+Detailed documentation is available in [`docs/`](docs/):
 
-## 4. API
+* **[Architecture & Design Guide (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**: Two-phase commit isolation, wallet reservation model, append-only immutable ledger, database ER diagram, payout state machine, and concurrency protection.
+* **[REST API Specification (`docs/API.md`)](docs/API.md)**: Full API reference, authentication headers, response & error envelope schemas, and complete error code catalog.
+* **[Sample Requests & cURL Cookbook (`docs/sample-requests.md`)](docs/sample-requests.md)**: Ready-to-run cURL commands for payouts, bank simulation scenarios, concurrent races, HMAC webhook signing, and reconciliation.
+* **[Automated Test Results (`docs/TEST_RESULTS.md`)](docs/TEST_RESULTS.md)**: Verbatim test run output for all 72 tests across 6 suites against PostgreSQL 16.
+* **Interactive Swagger UI**: Explore and execute requests directly in the browser at [`http://localhost:3001/api/docs`](http://localhost:3001/api/docs) (or `/api/doc`, `/docs`).
+* **End-to-End Demo Script**: `bash scripts/demo.sh` runs a 12-step automated cURL demo (requires server running and `npm run seed -- --reset`).
+
+## 4. API Overview
 
 All paths are under `/api`. Interactive documentation is at `/api/docs`.
 Responses follow a standard enterprise envelope:
@@ -204,14 +210,38 @@ I used plain SQL through `pg` instead of an ORM so every locking statement is vi
 * **`BIGINT` as JS `number`** is exact below 2⁵³ paise (≈ INR 9 × 10¹³); the payout cap keeps us far below it.
 * **Unknown ≠ failed** keeps money safe but means funds can stay reserved until reconciliation runs.
 
-## 9. Known limitations
+## 9. Current behaviour and known limitations
 
-* If the process crashes between TX1 and the bank call, the payout stays `PROCESSING`; reconciliation will flag it (`NOT_FOUND`) for manual review rather than auto-failing it. A production system would add a recovery job / outbox.
-* Webhooks have no timestamp/replay window (replays are harmless as duplicates, but a stale-signature window would be better) and a single non-rotating secret.
-* No rate limiting, API-key rotation/scopes, or TLS termination (those belong in front of the service).
-* Reconciliation scans all payouts; production would batch by time window and run on a schedule. It does not detect bank transfers that have no local payout.
-* `beneficiary_ref` is stored in plain text; production should encrypt/tokenise it.
-* Mock-bank timeouts are simulated instantly (no real delay), and idempotency records never expire.
+### Implemented and tested
+
+* Integer-paise wallet with a reserve / settle / reverse ledger (append-only `ledger_entries`).
+* Atomic, concurrency-safe debits: per-merchant wallet locking, conditional updates and `CHECK` constraints keep balances correct under concurrent requests.
+* Merchant-scoped idempotency: the same `Idempotency-Key` from the same merchant replays the original result.
+* Mock bank with `SUCCESS` / `FAILED` / `PENDING` / `TIMEOUT` outcomes. A timeout becomes `UNKNOWN` and is never retried or assumed failed.
+* HMAC-signed, idempotent webhooks processed through an explicit payout state machine; invalid transitions are ignored.
+* One-time reversal: funds are released at most once regardless of duplicate, concurrent or racing failure signals.
+* Reconciliation CLI/endpoint that resolves non-final payouts from bank status and flags final-status disagreements for manual review.
+* Masking/redaction of sensitive values in logs and responses.
+* Integration and unit tests against a real PostgreSQL database, including concurrent-request tests.
+
+### Limitations
+
+**Reliability**
+* A crash between reserving funds and calling the bank leaves the payout in `PROCESSING`. Recovery needs an outbox plus a retry worker that reuses the same `bank_reference`, along with alerting; this is not implemented.
+* Final-status mismatches are only reported in the reconciliation output. There is no durable exceptions table and no compensating ledger entries.
+* Reconciliation is one-directional (it does not detect bank transfers with no local payout), unscheduled, and unbounded (it scans all payouts).
+
+**Money correctness**
+* There are no returns or recalls after a payout reaches `SUCCESS`.
+* The ledger invariant is checked only in tests, not continuously in production. The ledger is single-entry: fees and double-entry accounting are out of scope.
+
+**Security & operations**
+* Demo secrets have fallbacks, and the Docker setup uses a superuser database role.
+* Webhooks carry no timestamp, sequence number or amount, so stale or reordered events cannot be rejected outright, and events for unknown references are acknowledged but cannot be retried later.
+* There is no rate limiting, API-key rotation, health/metrics endpoint, or CI pipeline.
+
+**Business controls**
+* There is no beneficiary registry, transaction/velocity limits, approval workflow or sanctions screening.
 
 ## 10. Project layout
 
@@ -228,7 +258,7 @@ src/common/                      backward-compatible re-exports
 src/db/                          pg pool + transaction helper, migration runner, seed
 test/                            72 integration & unit tests (real PostgreSQL)
 scripts/                         demo.sh (cURL walkthrough), bank-simulate.ts
-docs/                            sample requests, test results
+docs/                            ARCHITECTURE.md, API.md, sample-requests.md, TEST_RESULTS.md
 ```
 
 Useful scripts: `npm run migrate` · `npm run seed [-- --reset]` · `npm start` · `npm run build && npm run start:prod` · `npm test` · `npm run reconcile` · `npm run bank:simulate -- <bank_reference> <SUCCESS|FAILED> [--event-id <id>]`

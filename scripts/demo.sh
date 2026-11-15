@@ -2,6 +2,10 @@
 # End-to-end demo with cURL. Prereqs: server running (npm start) and a fresh seed (npm run seed -- --reset).
 # Usage: bash scripts/demo.sh
 set -u
+if [ -f .env ]; then
+  # Load relevant non-comment env variables from .env
+  PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d '=' -f2 | tr -d '\r"' || echo "")
+fi
 PORT=${PORT:-3001}
 BASE=${BASE:-http://localhost:$PORT/api}
 KEY_A=test_key_acme_00000000000001      # Acme  : INR 1,00,000

@@ -40,6 +40,11 @@ if (require.main === module) {
     const client = new Client({ connectionString: config.databaseUrl });
     await client.connect();
     if (process.argv.includes('--reset')) {
+      if (process.env.NODE_ENV === 'production') {
+        console.error('Refusing to run --reset with NODE_ENV=production.');
+        await client.end();
+        process.exit(1);
+      }
       // Demo helper: wipes ALL data in the database named by DATABASE_URL, then re-seeds.
       await client.query('TRUNCATE webhook_events, mock_bank_transfers, payout_status_history, ledger_entries, payouts, wallets, merchants RESTART IDENTITY CASCADE');
       console.log('Database wiped.');

@@ -122,9 +122,10 @@ export class PayoutsService {
     if (target === 'SUCCESS') await this.wallet.settle(c, p.merchant_id, p.id, p.amount_paise);
     if (target === 'FAILED') await this.wallet.release(c, p.merchant_id, p.id, p.amount_paise);
 
-    const failureReason = target === 'SUCCESS' ? null
-      : target === 'FAILED' ? (source === 'BANK_RESPONSE' ? (detail ?? 'Rejected by bank') : `Bank reported failure (${source.toLowerCase()})`)
-      : (detail ?? null);
+    const failureReason = target === 'FAILED'
+      ? (source === 'BANK_RESPONSE' ? (detail ?? 'Rejected by bank') : `Bank reported failure (${source.toLowerCase()})`)
+      : target === 'UNKNOWN' ? (detail ?? null)
+      : null;
     const updated = await c.query<PayoutRow>(
       `UPDATE payouts SET status = $2, failure_reason = $3, updated_at = now()
        WHERE id = $1 RETURNING *`,

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PoolClient } from 'pg';
 import { DbService } from '../db/db.service';
 
@@ -11,6 +11,7 @@ export class WalletService {
   async getWallet(merchantId: string) {
     const { rows } = await this.db.query(
       'SELECT available_paise, reserved_paise, updated_at FROM wallets WHERE merchant_id = $1', [merchantId]);
+    if (!rows[0]) throw new NotFoundException({ code: 'WALLET_NOT_FOUND', message: 'Wallet not found' });
     return rows[0];
   }
 

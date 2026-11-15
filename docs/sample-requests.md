@@ -1,9 +1,14 @@
 # Sample Requests (cURL)
 
+Practical cURL cookbook for exercising the payout service.
+* For the complete API reference, parameter validation, and error code catalog, see [API.md](API.md).
+* For system architecture, ledger accounting models, and state machine diagrams, see [ARCHITECTURE.md](ARCHITECTURE.md).
+* For automated test verification results, see [TEST_RESULTS.md](TEST_RESULTS.md).
+
 The server runs on `http://localhost:${PORT:-3001}` (default `3000`, or `3001` if configured via `.env`). The database must be migrated and seeded (`npm run migrate && npm run seed`). All API keys and secrets are synthetic demo values.
 
 ```bash
-PORT=${PORT:-3001}
+PORT=${PORT:-3000}
 BASE="http://localhost:$PORT/api"
 KEY_A="test_key_acme_00000000000001"        # Acme Test Merchant: INR 1,00,000 (10,000,000 paise)
 KEY_B="test_key_globex_0000000000001"       # Globex Test Merchant: INR 50,000 (5,000,000 paise)
@@ -16,8 +21,8 @@ WEBHOOK_SECRET="demo_webhook_secret_change_me"
 ## 1. Interactive Swagger / OpenAPI Documentation
 
 Explore and test all endpoints interactively in your browser:
-* **Swagger UI:** `http://localhost:3001/api/docs` (also available at `/api/doc` and `/docs`)
-* **OpenAPI JSON Spec:** `http://localhost:3001/api/docs-json`
+* **Swagger UI:** `http://localhost:3000/api/docs` (also available at `/api/doc` and `/docs`)
+* **OpenAPI JSON Spec:** `http://localhost:3000/api/docs-json`
 
 ---
 

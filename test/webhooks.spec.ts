@@ -78,6 +78,16 @@ describe('Bank webhooks: authentication, duplicates, reversal safety', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.result).toBe('UNKNOWN_REFERENCE');
     });
+
+    it('a PENDING webhook moves UNKNOWN -> PENDING without leaking event detail into failure_reason', async () => {
+      const p = await pay(app, A.key, 'idem-hook-unknown-pending', 'BEN_TIMEOUT_001', inr(10_000));
+      expect(p.body.data.status).toBe('UNKNOWN');
+      const res = await webhook(app, { event_id: 'evt-pend-unknown-1', bank_reference: p.body.data.bank_reference, status: 'PENDING' });
+      expect(res.body.data.result).toBe('APPLIED');
+      const row = (await db.query('SELECT status, failure_reason FROM payouts WHERE id = $1', [p.body.data.id])).rows[0];
+      expect(row.status).toBe('PENDING');
+      expect(row.failure_reason).toBeNull();
+    });
   });
 
   describe('reversal safety (funds released exactly once)', () => {

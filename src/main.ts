@@ -7,6 +7,7 @@ import { AppConfigService } from './shared/config/app-config.service';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
+  app.enableShutdownHooks();
   configureApp(app);
   const config = app.get(AppConfigService);
   await app.listen(config.port);
