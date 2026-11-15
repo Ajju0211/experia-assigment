@@ -39,7 +39,11 @@ export class WalletService {
   async settle(c: PoolClient, merchantId: string, payoutId: string, amount: number) {
     const { rows } = await c.query(
       `UPDATE wallets SET reserved_paise = reserved_paise - $2, updated_at = now()
-       WHERE merchant_id = $1 RETURNING available_paise, reserved_paise`, [merchantId, amount]);
+       WHERE merchant_id = $1 AND reserved_paise >= $2
+       RETURNING available_paise, reserved_paise`, [merchantId, amount]);
+    if (!rows[0]) {
+      throw new Error(`Cannot settle payout ${payoutId}: wallet not found or insufficient reserved balance`);
+    }
     await this.post(c, merchantId, payoutId, 'PAYOUT_SETTLE', amount, rows[0], 'Payout settled');
   }
 
@@ -47,7 +51,11 @@ export class WalletService {
     const { rows } = await c.query(
       `UPDATE wallets
           SET reserved_paise = reserved_paise - $2, available_paise = available_paise + $2, updated_at = now()
-        WHERE merchant_id = $1 RETURNING available_paise, reserved_paise`, [merchantId, amount]);
+        WHERE merchant_id = $1 AND reserved_paise >= $2
+        RETURNING available_paise, reserved_paise`, [merchantId, amount]);
+    if (!rows[0]) {
+      throw new Error(`Cannot release payout ${payoutId}: wallet not found or insufficient reserved balance`);
+    }
     await this.post(c, merchantId, payoutId, 'PAYOUT_REVERSAL', amount, rows[0], 'Payout failed - funds released');
   }
 

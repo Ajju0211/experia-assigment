@@ -27,16 +27,23 @@ export class PayoutsService {
   ) {}
 
   async create(merchantId: string, idempotencyKey: string, dto: CreatePayoutDto): Promise<{ payout: PayoutRow; replayed: boolean }> {
-    const requestHash = sha256(`${dto.beneficiary_ref}|${dto.amount_paise}`);
+    const normalizedRef = dto.beneficiary_ref.trim();
+    const normalizedAmount = Math.trunc(dto.amount_paise);
+    const requestHash = sha256(`${normalizedRef}|${normalizedAmount}`);
 
     const step1 = await this.db.tx(async (c) => {
       await this.wallet.lock(c, merchantId);
 
       const existing = await c.query<PayoutRow>(
-        'SELECT * FROM payouts WHERE merchant_id = $1 AND idempotency_key = $2', [merchantId, idempotencyKey]);
+        'SELECT * FROM payouts WHERE merchant_id = $1 AND idempotency_key = $2',
+        [merchantId, idempotencyKey],
+      );
       if (existing.rows[0]) {
         if (existing.rows[0].request_hash !== requestHash) {
-          throw new ConflictException({ code: 'IDEMPOTENCY_KEY_REUSED', message: 'Idempotency-Key was already used with a different request payload' });
+          throw new ConflictException({
+            code: 'IDEMPOTENCY_KEY_REUSED',
+            message: 'Idempotency-Key was already used with a different request payload',
+          });
         }
         return { payout: existing.rows[0], replayed: true };
       }
@@ -44,10 +51,30 @@ export class PayoutsService {
       const id = randomUUID();
       const { rows } = await c.query<PayoutRow>(
         `INSERT INTO payouts (id, merchant_id, idempotency_key, request_hash, beneficiary_ref, amount_paise, status, bank_reference)
-         VALUES ($1,$2,$3,$4,$5,$6,'PROCESSING',$7) RETURNING *`,
-        [id, merchantId, idempotencyKey, requestHash, dto.beneficiary_ref, dto.amount_paise, `BNK-${id}`]);
+         VALUES ($1,$2,$3,$4,$5,$6,'PROCESSING',$7)
+         ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
+         RETURNING *`,
+        [id, merchantId, idempotencyKey, requestHash, normalizedRef, normalizedAmount, `BNK-${id}`],
+      );
 
-      const reserved = await this.wallet.reserve(c, merchantId, id, dto.amount_paise);
+      // Handle concurrent insert if another transaction raced past the SELECT
+      if (!rows[0]) {
+        const conflict = await c.query<PayoutRow>(
+          'SELECT * FROM payouts WHERE merchant_id = $1 AND idempotency_key = $2',
+          [merchantId, idempotencyKey],
+        );
+        if (conflict.rows[0]) {
+          if (conflict.rows[0].request_hash !== requestHash) {
+            throw new ConflictException({
+              code: 'IDEMPOTENCY_KEY_REUSED',
+              message: 'Idempotency-Key was already used with a different request payload',
+            });
+          }
+          return { payout: conflict.rows[0], replayed: true };
+        }
+      }
+
+      const reserved = await this.wallet.reserve(c, merchantId, id, normalizedAmount);
       if (!reserved) {
         throw new HttpException({ code: 'INSUFFICIENT_FUNDS', message: 'Insufficient available balance' }, 422);
       }
@@ -65,8 +92,15 @@ export class PayoutsService {
 
   private async callBank(p: PayoutRow): Promise<{ status: PayoutStatus; reason?: string }> {
     try {
-      const res = await this.bank.transfer({ bankReference: p.bank_reference, beneficiaryRef: p.beneficiary_ref, amountPaise: p.amount_paise });
-      return { status: res.status, reason: res.failureReason };
+      const res = await this.bank.transfer({
+        bankReference: p.bank_reference,
+        beneficiaryRef: p.beneficiary_ref,
+        amountPaise: p.amount_paise,
+      });
+      if (res.status === 'SUCCESS' || res.status === 'FAILED' || res.status === 'PENDING') {
+        return { status: res.status, reason: res.failureReason };
+      }
+      return { status: 'UNKNOWN', reason: 'Unexpected bank status response' };
     } catch (err) {
       const timeout = err instanceof BankTimeoutError;
       this.logger.warn(`Bank outcome unknown for payout ${p.id} (${timeout ? 'timeout' : 'error'}); will not retry, leaving for reconciliation`);
@@ -88,11 +122,11 @@ export class PayoutsService {
     if (target === 'SUCCESS') await this.wallet.settle(c, p.merchant_id, p.id, p.amount_paise);
     if (target === 'FAILED') await this.wallet.release(c, p.merchant_id, p.id, p.amount_paise);
 
-    const failureReason = target !== 'FAILED' ? null
-      : source === 'BANK_RESPONSE' ? detail ?? 'Rejected by bank'
-      : `Bank reported failure (${source.toLowerCase()})`;
+    const failureReason = target === 'SUCCESS' ? null
+      : target === 'FAILED' ? (source === 'BANK_RESPONSE' ? (detail ?? 'Rejected by bank') : `Bank reported failure (${source.toLowerCase()})`)
+      : (detail ?? null);
     const updated = await c.query<PayoutRow>(
-      `UPDATE payouts SET status = $2, failure_reason = COALESCE($3, failure_reason), updated_at = now()
+      `UPDATE payouts SET status = $2, failure_reason = $3, updated_at = now()
        WHERE id = $1 RETURNING *`,
       [p.id, target, failureReason]);
     await this.addHistory(c, p.id, p.status, target, source, detail);
