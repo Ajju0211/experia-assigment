@@ -22,7 +22,7 @@ CREATE TABLE payouts (
   id               UUID PRIMARY KEY,
   merchant_id      UUID NOT NULL REFERENCES merchants(id),
   idempotency_key  TEXT NOT NULL,
-  request_hash     TEXT NOT NULL,                 -- hash of (beneficiary_ref, amount) to detect key reuse with a different payload
+  request_hash     TEXT NOT NULL,                 -- hash of normalized (beneficiary_ref, amount) to detect key reuse with a different payload
   beneficiary_ref  TEXT NOT NULL,
   amount_paise     BIGINT NOT NULL CHECK (amount_paise > 0),
   status           TEXT NOT NULL CHECK (status IN ('PROCESSING','PENDING','UNKNOWN','SUCCESS','FAILED')),
@@ -33,6 +33,7 @@ CREATE TABLE payouts (
   UNIQUE (merchant_id, idempotency_key)           -- DB-level guarantee: one payout per (merchant, key)
 );
 CREATE INDEX payouts_merchant_created_idx ON payouts (merchant_id, created_at DESC);
+CREATE INDEX payouts_status_idx ON payouts (status);
 
 -- Immutable audit trail of every status change and who caused it.
 CREATE TABLE payout_status_history (
@@ -44,6 +45,7 @@ CREATE TABLE payout_status_history (
   detail      TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX payout_status_history_payout_idx ON payout_status_history (payout_id, id ASC);
 
 -- Append-only ledger. Every money movement is a row; nothing is ever updated or deleted.
 --   CREDIT          available += amount
@@ -64,7 +66,10 @@ CREATE TABLE ledger_entries (
 );
 -- "Exactly once" guarantee at the database level: a payout can have at most ONE reserve, ONE settle, ONE reversal.
 CREATE UNIQUE INDEX ledger_once_per_type_per_payout ON ledger_entries (payout_id, type) WHERE payout_id IS NOT NULL;
+-- Mutual exclusion: a payout can never have both a settlement and a reversal.
+CREATE UNIQUE INDEX ledger_terminal_once_per_payout ON ledger_entries (payout_id) WHERE type IN ('PAYOUT_SETTLE', 'PAYOUT_REVERSAL');
 CREATE INDEX ledger_merchant_idx ON ledger_entries (merchant_id, id DESC);
+CREATE INDEX ledger_payout_id_idx ON ledger_entries (payout_id) WHERE payout_id IS NOT NULL;
 
 CREATE FUNCTION forbid_update_delete() RETURNS trigger AS $$
 BEGIN
@@ -85,6 +90,7 @@ CREATE TABLE webhook_events (
   result          TEXT NOT NULL,
   received_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX webhook_events_bank_ref_idx ON webhook_events (bank_reference);
 
 -- MOCK BANK's own records (stands in for the bank's side of the world; the real bank would be an HTTP API).
 CREATE TABLE mock_bank_transfers (
