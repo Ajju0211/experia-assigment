@@ -1,7 +1,12 @@
+import 'reflect-metadata';
 import { plainToInstance } from 'class-transformer';
 import { IsInt, IsNotEmpty, IsOptional, IsString, Max, Min, validateSync } from 'class-validator';
 
 export class EnvironmentVariables {
+  @IsOptional()
+  @IsString()
+  NODE_ENV: string = 'development';
+
   @IsOptional()
   @IsInt()
   @Min(1)

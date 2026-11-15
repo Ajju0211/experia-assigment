@@ -1,4 +1,7 @@
-// Values come from environment variables (.env). Defaults are DEMO-ONLY synthetic values.
+/**
+ * Fallback configuration helper for standalone CLI scripts running outside the NestJS IoC container.
+ * Application modules inside the NestJS app must inject AppConfigService from src/shared/config.
+ */
 export const config = {
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/payouts',
