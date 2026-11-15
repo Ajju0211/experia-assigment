@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { AppConfigModule } from './config/app-config.module';
 import { AdminGuard } from './guards/admin.guard';
 import { ApiKeyGuard } from './guards/api-key.guard';
 import { BankSignatureGuard } from './guards/bank-signature.guard';
@@ -7,6 +8,7 @@ import { ResponseTransformInterceptor } from './interceptors/response-transform.
 
 @Global()
 @Module({
+  imports: [AppConfigModule],
   providers: [
     ApiKeyGuard,
     AdminGuard,
@@ -15,6 +17,7 @@ import { ResponseTransformInterceptor } from './interceptors/response-transform.
     ResponseTransformInterceptor,
   ],
   exports: [
+    AppConfigModule,
     ApiKeyGuard,
     AdminGuard,
     BankSignatureGuard,

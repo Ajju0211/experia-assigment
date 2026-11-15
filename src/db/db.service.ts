@@ -1,21 +1,22 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Pool, PoolClient, QueryResult, QueryResultRow, types } from 'pg';
-import { config } from '../config';
+import { AppConfigService } from '../shared/config/app-config.service';
 
 // Postgres BIGINT (type id 20) converted to JS number for exact paise amounts
 types.setTypeParser(20, (v) => Number(v));
 
 @Injectable()
 export class DbService implements OnModuleDestroy {
-  readonly pool = new Pool({ connectionString: config.databaseUrl, max: 20 });
+  readonly pool: Pool;
+
+  constructor(private readonly config: AppConfigService) {
+    this.pool = new Pool({ connectionString: this.config.databaseUrl, max: 20 });
+  }
 
   query<T extends QueryResultRow = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
     return this.pool.query<T>(text, params);
   }
 
-  /**
-   * Executes callback within a database transaction with automatic COMMIT / ROLLBACK.
-   */
   async tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
