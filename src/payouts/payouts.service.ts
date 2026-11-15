@@ -16,6 +16,15 @@ export interface TransitionResult {
   reason: 'APPLIED' | 'NO_CHANGE' | 'INVALID_TRANSITION';
 }
 
+/**
+ * Owns the payout lifecycle: creation, bank submission, and status transitions.
+ *
+ * A payout is created in two phases: first we atomically reserve funds inside a
+ * DB transaction, then we call the bank outside of it. Keeping the network call
+ * out of the transaction avoids holding wallet locks for the duration of an
+ * external request; any ambiguous bank outcome is parked as UNKNOWN and left
+ * for reconciliation instead of being retried.
+ */
 @Injectable()
 export class PayoutsService {
   private readonly logger = new Logger(PayoutsService.name);
@@ -26,11 +35,26 @@ export class PayoutsService {
     private readonly bank: BankAdapter,
   ) {}
 
+  /**
+   * Creates a payout idempotently and performs the initial bank submission.
+   *
+   * Idempotency is scoped per merchant + Idempotency-Key. A request hash of the
+   * normalized payload is stored alongside the key so that reusing a key with a
+   * different payload is rejected rather than silently returning the old payout.
+   * Replays return the original payout without touching the bank again.
+   *
+   * @returns the payout plus whether this call was an idempotent replay.
+   */
   async create(merchantId: string, idempotencyKey: string, dto: CreatePayoutDto): Promise<{ payout: PayoutRow; replayed: boolean }> {
+    // Normalize before hashing so semantically identical requests match even if
+    // the client changes whitespace or sends a fractional amount.
     const normalizedRef = dto.beneficiary_ref.trim();
     const normalizedAmount = Math.trunc(dto.amount_paise);
     const requestHash = sha256(`${normalizedRef}|${normalizedAmount}`);
 
+    // Phase 1: reserve funds and persist the payout in a single transaction.
+    // The wallet row is locked first so concurrent payouts for the same merchant
+    // serialize and cannot overdraw the available balance.
     const step1 = await this.db.tx(async (c) => {
       await this.wallet.lock(c, merchantId);
 
@@ -84,12 +108,21 @@ export class PayoutsService {
 
     if (step1.replayed) return step1;
 
+    // Phase 2: submit to the bank only after funds are safely reserved. This call
+    // is intentionally outside the transaction so a slow bank cannot hold locks.
     const outcome = await this.callBank(step1.payout);
     const { payout } = await this.db.tx((c) =>
       this.transition(c, step1.payout.id, outcome.status, 'BANK_RESPONSE', outcome.reason));
     return { payout, replayed: false };
   }
 
+  /**
+   * Submits the transfer and maps the bank result onto a payout status.
+   *
+   * Transient failures are never retried here: if the bank timed out or errored
+   * we cannot know whether the money moved, so the payout is marked UNKNOWN and
+   * reconciliation decides the final outcome from the bank's records.
+   */
   private async callBank(p: PayoutRow): Promise<{ status: PayoutStatus; reason?: string }> {
     try {
       const res = await this.bank.transfer({
@@ -108,6 +141,14 @@ export class PayoutsService {
     }
   }
 
+  /**
+   * Applies a state transition under a row-level lock.
+   *
+   * The lock guarantees we read the latest status before deciding, which keeps
+   * concurrent writers (API, bank response, webhook, reconciliation) from
+   * double-applying wallet side effects. Invalid or no-op transitions are
+   * reported instead of throwing so callers can treat them as idempotent.
+   */
   async transition(c: PoolClient, payoutId: string, target: PayoutStatus, source: TransitionSource, detail?: string): Promise<TransitionResult> {
     const { rows } = await c.query<PayoutRow>('SELECT * FROM payouts WHERE id = $1 FOR UPDATE', [payoutId]);
     const p = rows[0];
@@ -119,6 +160,9 @@ export class PayoutsService {
       return { payout: p, applied: false, reason: 'INVALID_TRANSITION' };
     }
 
+    // Wallet impact must happen exactly once, alongside the status change, so
+    // both live in the same transaction: settle deducts the reserve on success;
+    // release returns it to available balance on failure.
     if (target === 'SUCCESS') await this.wallet.settle(c, p.merchant_id, p.id, p.amount_paise);
     if (target === 'FAILED') await this.wallet.release(c, p.merchant_id, p.id, p.amount_paise);
 
@@ -140,6 +184,8 @@ export class PayoutsService {
     return rows[0];
   }
 
+  // Append-only audit trail; kept in the same transaction as the status update
+  // so history can never drift from the payout's actual state.
   private async addHistory(c: PoolClient, payoutId: string, from: string | null, to: string, source: TransitionSource, detail?: string) {
     await c.query(
       'INSERT INTO payout_status_history (payout_id, from_status, to_status, source, detail) VALUES ($1,$2,$3,$4,$5)',
