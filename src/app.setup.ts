@@ -1,5 +1,6 @@
 import { BadRequestException, INestApplication, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { Request, Response, NextFunction } from 'express';
 import { AllExceptionsFilter } from './shared/filters/all-exceptions.filter';
 import { LoggingInterceptor } from './shared/interceptors/logging.interceptor';
 import { ResponseTransformInterceptor } from './shared/interceptors/response-transform.interceptor';
@@ -41,13 +42,28 @@ export function setupSwagger(app: INestApplication) {
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document, {
+  const options = {
     swaggerOptions: {
       persistAuthorization: true,
       tagsSorter: 'alpha',
       operationsSorter: 'method',
     },
     customSiteTitle: 'Merchant Payout Service - Swagger UI',
+  };
+
+  // Support both /api/docs and /api/doc aliases
+  SwaggerModule.setup('api/docs', app, document, options);
+  SwaggerModule.setup('api/doc', app, document, options);
+  SwaggerModule.setup('docs', app, document, options);
+
+  // Friendly browser redirect from /api/doc or /docs to /api/docs
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const rawUrl = req.originalUrl || req.url;
+    const cleanPath = rawUrl.split('?')[0].replace(/\/+$/, '');
+    if (cleanPath === '/doc' || cleanPath === '/docs') {
+      return res.redirect('/api/docs');
+    }
+    next();
   });
 }
 
