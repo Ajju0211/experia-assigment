@@ -18,8 +18,10 @@ cp .env.example .env                 # demo-only values
 docker compose up -d db              # PostgreSQL 16 on :5432, creates database "payouts" (or use your own PostgreSQL, see below)
 npm run migrate                      # creates tables (migrations/001_init.sql)
 npm run seed                         # creates 2 test merchants (prints their API keys)
-npm start                            # http://localhost:3000/api
+npm start                            # http://localhost:3001/api (or :3000)
 ```
+
+Interactive Swagger documentation & testing UI: `http://localhost:3001/api/docs` (or `/api/doc`, `/docs`).
 
 If you use your own PostgreSQL instead of Docker: run `createdb payouts` and adjust `DATABASE_URL` / `TEST_DATABASE_URL` in `.env`.
 `npm test` creates the `payouts_test` database itself (the DB user needs CREATEDB permission).
@@ -40,28 +42,33 @@ npm test
 ```
 
 Tests run against a **real PostgreSQL** database (`payouts_test`, wiped between tests) because concurrency guarantees
-cannot be proven with a mock. 44 tests, ~5 s. Latest output: [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md).
+cannot be proven with a mock. 72 tests, ~4 s. Latest output: [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md).
 
 | Required test | Where |
 |---|---|
+| Hardened core requirements (16 scenarios: idempotency, balance safety, bank failures, rollbacks) | `test/hardening.spec.ts` |
 | Simultaneous withdrawals (2 × INR 70,000; and 10 × INR 30,000) | `test/payouts.spec.ts` |
 | Repeated idempotency keys (sequential, concurrent, different payload, merchant-scoped) | `test/payouts.spec.ts` |
-| Cross-merchant access | `test/payouts.spec.ts` |
+| Cross-merchant access & authentication | `test/payouts.spec.ts` |
 | Bank timeout (UNKNOWN, no retry, reconcile to SUCCESS or FAILED) | `test/bank-reconciliation.spec.ts` |
 | Duplicate webhooks (sequential and 5× concurrent) | `test/webhooks.spec.ts` |
 | Reversal safety (6 distinct failure events, FAILED→SUCCESS flip, webhook vs reconciliation race) | `test/webhooks.spec.ts` |
 | Validation, masking in logs/responses, append-only ledger, negative-balance constraint | `payouts.spec.ts`, `redaction.spec.ts` |
+| Strongly typed configuration, startup validation, secret redaction | `test/config.spec.ts` |
 
 Every scenario ends by checking an **accounting invariant** (`expectLedgerConsistent`): wallet balances must equal what the ledger sums to.
 
 ## 3. Sample requests
 
 * `bash scripts/demo.sh`: runs a 12-step end-to-end demo with cURL (needs the server running and `npm run seed -- --reset`).
-* [`docs/sample-requests.md`](docs/sample-requests.md): individual cURL commands, including how to sign a webhook.
+* [`docs/sample-requests.md`](docs/sample-requests.md): individual cURL commands, response envelopes, and webhook signing walkthrough.
 
 ## 4. API
 
-All paths are under `/api`. Errors always look like `{ "error": { "code": "...", "message": "..." } }`.
+All paths are under `/api`. Interactive documentation is at `/api/docs`.
+Responses follow a standard enterprise envelope:
+* **Success:** `{ "success": true, "statusCode": 200, "message": "Success", "data": { ... }, "path": "...", "timestamp": "..." }`
+* **Error:** `{ "success": false, "statusCode": 400, "message": "...", "data": null, "error": { "code": "...", "message": "...", "details": [...] }, "path": "...", "timestamp": "..." }`
 
 | Method & path | Auth | Purpose |
 |---|---|---|
@@ -216,9 +223,10 @@ src/bank/                        BankAdapter interface + MockBankAdapter
 src/webhooks/                    signed webhook endpoint + idempotent processing
 src/reconciliation/              ReconciliationService, admin endpoint, CLI
 src/transactions/                GET /transactions
-src/common/                      auth guards, redaction, request logger, error filter
+src/shared/                      ConfigService, auth guards, redaction, logging/response interceptors, exceptions filter
+src/common/                      backward-compatible re-exports
 src/db/                          pg pool + transaction helper, migration runner, seed
-test/                            44 integration tests (real PostgreSQL)
+test/                            72 integration & unit tests (real PostgreSQL)
 scripts/                         demo.sh (cURL walkthrough), bank-simulate.ts
 docs/                            sample requests, test results
 ```
